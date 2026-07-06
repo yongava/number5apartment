@@ -97,7 +97,7 @@ function readAll_(){
     invoices: readInvoices_(),
     costs: readCosts_(),
     incomeHistory: readIncome_(),
-    settings: { defaultNote: s_(getSetting_("defaultNote")) },
+    settings: { defaultNote: s_(getSetting_("defaultNote")), address: s_(getSetting_("address")) },
     seq: Number(getSetting_("seq")) || 1
   };
 }
@@ -226,6 +226,7 @@ function writeAll_(st){
 
   writeSheet_(TAB.settings, ["key","value"], [
     ["buildingName", s_(st.buildingName)||"หอพักเลขที่ 5"],
+    ["address", (st.settings && s_(st.settings.address)) || ""],
     ["defaultNote", (st.settings && s_(st.settings.defaultNote)) || ""],
     ["seq", String(Number(st.seq)||1)]
   ]);
