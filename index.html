@@ -205,6 +205,7 @@ function apiCfg(){ try{const o=JSON.parse(localStorage.getItem(APICFG_KEY)); if(
 function setApiCfg(cfg){ localStorage.setItem(APICFG_KEY, JSON.stringify(cfg)); }
 const TH_MONTHS = ["มกราคม","กุมภาพันธ์","มีนาคม","เมษายน","พฤษภาคม","มิถุนายน","กรกฎาคม","สิงหาคม","กันยายน","ตุลาคม","พฤศจิกายน","ธันวาคม"];
 const TH_MONTHS_SHORT = ["ม.ค.","ก.พ.","มี.ค.","เม.ย.","พ.ค.","มิ.ย.","ก.ค.","ส.ค.","ก.ย.","ต.ค.","พ.ย.","ธ.ค."];
+const EN_MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const DEFAULT_NOTE = "ชำระผ่านช่องทาง ธนาคาร SCB เลขที่ 1652330912 Nutthasit Srisonthiyakul";
 
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1008,9 +1009,10 @@ function renderInvoice(el){
       <div class="card no-print">
         <div class="row-actions">
           <button class="btn green" id="iv_save">💾 ${moveout?'บันทึกสรุปย้ายออก':'บันทึกบิล'}</button>
-          <button class="btn primary" id="iv_print">🖨️ พิมพ์ / บันทึก PDF</button>
+          <button class="btn" id="iv_img">🖼️ บันทึกเป็นรูป</button>
+          <button class="btn primary" id="iv_print">🖨️ พิมพ์ / PDF</button>
         </div>
-        <div class="hint" style="margin-top:8px">${moveout?'บันทึกแล้วจะถามว่าตั้งห้องเป็นว่างเลยไหม · กด “พิมพ์” เพื่อส่งใบสรุปให้ผู้เช่า':'บันทึกบิลแล้วยอดจะถูกนำไปคิดในหน้าภาพรวมของเดือนนั้น · กด “พิมพ์” เพื่อบันทึกเป็น PDF หรือแคปหน้าจอส่งผู้เช่า'}</div>
+        <div class="hint" style="margin-top:8px">🖼️ “บันทึกเป็นรูป” = ดาวน์โหลดสลิปเป็น PNG ตั้งชื่อไฟล์อัตโนมัติ เช่น <b>${esc(slipFilename())}</b> เพื่อส่งให้ผู้เช่าได้เลย${moveout?' · บันทึกแล้วจะถามว่าตั้งห้องเป็นว่างเลยไหม':' · บันทึกบิลแล้วยอดจะถูกนำไปคิดในหน้าภาพรวม'}</div>
       </div>
     </div>
   </div>`;
@@ -1029,6 +1031,7 @@ function renderInvoice(el){
   $("#iv_additem").onclick=()=>{invoiceForm.items.push({desc:"",qty:1,price:0});renderInvoice(el);};
   bindCustomLines(el);
   $("#iv_save").onclick=saveInvoice;
+  $("#iv_img").onclick=saveSlipImage;
   $("#iv_print").onclick=()=>window.print();
 
   function refreshSlip(){ $("#slipHolder").innerHTML=slipHTML(buildInvoiceObject()); }
@@ -1147,6 +1150,45 @@ function slipHTML(inv){
     ${inv.note?`<div class="note"><b>หมายเหตุ:</b> ${esc(inv.note)}</div>`:''}
     <div class="foot"><span>${esc(state.buildingName)}</span><span>ออกโดยระบบ Dashboard</span></div>
   </div></div>`;
+}
+function slipFilename(){
+  const inv=buildInvoiceObject();
+  const {y,m}=parsePeriod(inv.period);
+  const room=(inv.roomLabel||"room").replace(/[\/\\\s]/g,"-");
+  const mon=(m>=1&&m<=12)?EN_MONTHS[m-1]:"";
+  const base=[room, mon, y||""].filter(Boolean).join("_");
+  return base + (inv.type==="moveout"?"_moveout":"") + ".png";
+}
+// Render the slip to a PNG entirely in-browser (SVG foreignObject -> canvas). No external library.
+async function saveSlipImage(){
+  const node=document.getElementById("printable");
+  if(!node){ toast("ไม่พบสลิป"); return; }
+  try{
+    const rect=node.getBoundingClientRect();
+    const w=Math.ceil(rect.width), h=Math.ceil(rect.height);
+    const css=(document.querySelector("style")||{}).textContent||"";
+    const clone=node.cloneNode(true); clone.style.margin="0";
+    const xml=new XMLSerializer().serializeToString(clone);
+    const body=`<div xmlns="http://www.w3.org/1999/xhtml" style="width:${w}px;background:#fff;font-family:'Sarabun',system-ui,-apple-system,'Noto Sans Thai',sans-serif"><style><![CDATA[${css}]]></style>${xml}</div>`;
+    const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><foreignObject x="0" y="0" width="100%" height="100%">${body}</foreignObject></svg>`;
+    const url="data:image/svg+xml;charset=utf-8,"+encodeURIComponent(svg);
+    const img=new Image();
+    await new Promise((resolve,reject)=>{ img.onload=resolve; img.onerror=()=>reject(new Error("render")); img.src=url; });
+    const scale=2, canvas=document.createElement("canvas");
+    canvas.width=w*scale; canvas.height=h*scale;
+    const ctx=canvas.getContext("2d");
+    ctx.fillStyle="#fff"; ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.scale(scale,scale); ctx.drawImage(img,0,0);
+    const blob=await new Promise((resolve)=>canvas.toBlob(resolve,"image/png"));
+    if(!blob) throw new Error("blob");
+    const durl=URL.createObjectURL(blob), a=document.createElement("a");
+    a.href=durl; a.download=slipFilename(); document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(durl),1500);
+    toast("บันทึกรูปแล้ว: "+slipFilename()+" ✓");
+  }catch(e){
+    console.warn("saveSlipImage",e);
+    toast("บันทึกรูปไม่สำเร็จ — ลองใช้ปุ่มพิมพ์/แคปหน้าจอแทน");
+  }
 }
 function saveInvoice(){
   const inv=buildInvoiceObject();
