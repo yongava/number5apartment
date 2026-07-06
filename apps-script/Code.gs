@@ -26,7 +26,7 @@ var TAB = {
   income:   "รายได้ย้อนหลัง"
 };
 var TENANT_COLS  = ["roomId","roomLabel","firstName","lastName","phone","deposit","roomRate","elecRate","waterRate","occupied","moveInDate","startWater","startElec","note"];
-var INVOICE_COLS = ["id","period","roomId","roomLabel","tenant","phone","issueDate","savedAt","waterUnits","elecUnits","waterRate","elecRate","subtotal","discount","total","note","linesJson"];
+var INVOICE_COLS = ["id","period","roomId","roomLabel","tenant","phone","issueDate","savedAt","type","waterUnits","elecUnits","waterRate","elecRate","subtotal","discount","total","deposit","refund","note","linesJson"];
 var COST_COLS    = ["period","govWater","govElec","maintenance","note"];
 
 /* ===================== HTTP entry points ===================== */
@@ -159,8 +159,10 @@ function readInvoices_(){
     return {
       id:s_(r.id), period:s_(r.period), roomId:s_(r.roomId), roomLabel:s_(r.roomLabel),
       tenant:s_(r.tenant), phone:s_(r.phone), issueDate:s_(r.issueDate), savedAt:s_(r.savedAt),
+      type:s_(r.type)||"normal",
       waterUnits:n_(r.waterUnits), elecUnits:n_(r.elecUnits), waterRate:n_(r.waterRate), elecRate:n_(r.elecRate),
-      subtotal:n_(r.subtotal), discount:n_(r.discount), total:n_(r.total), note:s_(r.note), lines:lines
+      subtotal:n_(r.subtotal), discount:n_(r.discount), total:n_(r.total),
+      deposit:n_(r.deposit), refund:n_(r.refund), note:s_(r.note), lines:lines
     };
   });
 }
@@ -209,8 +211,9 @@ function writeAll_(st){
 
   var invRows = (st.invoices||[]).map(function(inv){
     return [s_(inv.id), s_(inv.period), s_(inv.roomId), s_(inv.roomLabel), s_(inv.tenant), s_(inv.phone),
-      s_(inv.issueDate), s_(inv.savedAt), n_(inv.waterUnits), n_(inv.elecUnits), n_(inv.waterRate), n_(inv.elecRate),
-      n_(inv.subtotal), n_(inv.discount), n_(inv.total), s_(inv.note), JSON.stringify(inv.lines||[])];
+      s_(inv.issueDate), s_(inv.savedAt), s_(inv.type)||"normal", n_(inv.waterUnits), n_(inv.elecUnits), n_(inv.waterRate), n_(inv.elecRate),
+      n_(inv.subtotal), n_(inv.discount), n_(inv.total), (inv.deposit==null?"":n_(inv.deposit)), (inv.refund==null?"":n_(inv.refund)),
+      s_(inv.note), JSON.stringify(inv.lines||[])];
   });
   writeSheet_(TAB.invoices, INVOICE_COLS, invRows);
 
