@@ -1,0 +1,10 @@
+# Static site — no build step. Publishes the repo root (index.html).
+[build]
+  publish = "."
+  command = ""
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "SAMEORIGIN"
+    Referrer-Policy = "no-referrer"
