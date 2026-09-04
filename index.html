@@ -172,6 +172,8 @@ tbody tr:last-child td{border-bottom:0}
   #printable,#printable *{visibility:visible}
   #printable{position:absolute;left:0;top:0;width:100%}
 }
+.bulk-print-slip{page-break-after:always;break-after:page}
+.bulk-print-slip:last-child{page-break-after:auto;break-after:auto}
 .footer-note{text-align:center;color:var(--muted);font-size:12px;margin-top:30px}
 .pill-toggle{display:inline-flex;border:1px solid var(--line);border-radius:999px;overflow:hidden}
 .pill-toggle button{border:0;background:#fff;padding:6px 14px;font-weight:700;font-size:13px;color:var(--muted);cursor:pointer}
@@ -1013,8 +1015,9 @@ function renderInvoice(el){
           <button class="btn green" id="iv_save">💾 ${moveout?'บันทึกสรุปย้ายออก':'บันทึกบิล'}</button>
           <button class="btn" id="iv_img">🖼️ บันทึกเป็นรูป</button>
           <button class="btn primary" id="iv_print">🖨️ พิมพ์ / PDF</button>
+          ${!moveout?'<button class="btn primary" id="iv_export_all">🗂️ Export ใบแจ้งทุกห้อง</button>':''}
         </div>
-        <div class="hint" style="margin-top:8px">🖼️ “บันทึกเป็นรูป” = ดาวน์โหลดสลิปเป็น PNG ตั้งชื่อไฟล์อัตโนมัติ เช่น <b>${esc(slipFilename())}</b> เพื่อส่งให้ผู้เช่าได้เลย${moveout?' · บันทึกแล้วจะถามว่าตั้งห้องเป็นว่างเลยไหม':' · บันทึกบิลแล้วยอดจะถูกนำไปคิดในหน้าภาพรวม'}</div>
+        <div class="hint" style="margin-top:8px">🖼️ “บันทึกเป็นรูป” = ดาวน์โหลดสลิปเป็น PNG ตั้งชื่อไฟล์อัตโนมัติ เช่น <b>${esc(slipFilename())}</b>${!moveout?' · “Export ใบแจ้งทุกห้อง” = รวมห้องที่มีผู้เช่าเป็น PDF ห้องละ 1 หน้า':''}${moveout?' · บันทึกแล้วจะถามว่าตั้งห้องเป็นว่างเลยไหม':' · บันทึกบิลแล้วยอดจะถูกนำไปคิดในหน้าภาพรวม'}</div>
       </div>
     </div>
   </div>`;
@@ -1035,6 +1038,7 @@ function renderInvoice(el){
   $("#iv_save").onclick=saveInvoice;
   $("#iv_img").onclick=saveSlipImage;
   $("#iv_print").onclick=()=>window.print();
+  { const all=$("#iv_export_all"); if(all) all.onclick=exportAllInvoices; }
 
   function refreshSlip(){ $("#slipHolder").innerHTML=slipHTML(buildInvoiceObject()); }
   function updateExistingWarn(){ renderInvoice(el); }
@@ -1160,6 +1164,37 @@ function slipFilename(){
   const mon=(m>=1&&m<=12)?EN_MONTHS[m-1]:"";
   const base=[room, mon, y||""].filter(Boolean).join("_");
   return base + (inv.type==="moveout"?"_moveout":"") + ".png";
+}
+function defaultInvoiceForRoom(rid, curP, billP, issueDate){
+  const oldForm=invoiceForm, oldMode=invoiceMode;
+  initInvoiceForm(rid);
+  invoiceMode="normal";
+  invoiceForm.curP=curP;
+  invoiceForm.billP=billP;
+  invoiceForm.issueDate=issueDate;
+  invoiceForm.waterUnits=null; invoiceForm.elecUnits=null;
+  recalcInvoiceReadings();
+  const inv=buildInvoiceObject();
+  invoiceForm=oldForm; invoiceMode=oldMode;
+  return inv;
+}
+function exportAllInvoices(){
+  const period=invoiceForm.billP, curP=invoiceForm.curP, issueDate=invoiceForm.issueDate||todayISO();
+  if(!period){ alert("กรุณาเลือกรอบบิล"); return; }
+  const rooms=state.rooms.filter(rid=>state.tenants[rid] && state.tenants[rid].occupied);
+  if(!rooms.length){ alert("ไม่มีห้องที่มีผู้เช่าสำหรับส่งออก"); return; }
+  const invoices=rooms.map(rid=>state.invoices.find(i=>i.roomId===rid && i.period===period && i.type!=="moveout") || defaultInvoiceForRoom(rid,curP,period,issueDate));
+  const css=(document.querySelector("style")||{}).textContent||"";
+  const pages=invoices.map(inv=>`<section class="bulk-print-slip">${slipHTML(inv)}</section>`).join("");
+  const frame=document.createElement("iframe");
+  frame.style.position="fixed"; frame.style.right="0"; frame.style.bottom="0"; frame.style.width="0"; frame.style.height="0"; frame.style.border="0";
+  document.body.appendChild(frame);
+  const doc=frame.contentDocument;
+  doc.open();
+  doc.write(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>ใบแจ้ง_${esc(period)}</title><style>${css}\n@page{size:A4;margin:12mm}body{background:#fff}.card{border:0;box-shadow:none;margin:0;padding:0}.slip{border:0;max-width:none;padding:0}.slip .foot{display:none}.bulk-print-slip{page-break-after:always;break-after:page}.bulk-print-slip:last-child{page-break-after:auto;break-after:auto}@media print{body *{visibility:visible!important}#printable{position:static!important;width:auto!important}}</style></head><body>${pages}</body></html>`);
+  doc.close();
+  setTimeout(()=>{ frame.contentWindow.focus(); frame.contentWindow.print(); setTimeout(()=>frame.remove(),1000); },250);
+  toast("เตรียมใบแจ้ง "+rooms.length+" ห้องแล้ว — เลือก Save as PDF ได้เลย");
 }
 // Render the slip to a PNG entirely in-browser (SVG foreignObject -> canvas). No external library.
 async function saveSlipImage(){
