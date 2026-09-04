@@ -172,8 +172,6 @@ tbody tr:last-child td{border-bottom:0}
   #printable,#printable *{visibility:visible}
   #printable{position:absolute;left:0;top:0;width:100%}
 }
-.bulk-print-slip{page-break-after:always;break-after:page}
-.bulk-print-slip:last-child{page-break-after:auto;break-after:auto}
 .footer-note{text-align:center;color:var(--muted);font-size:12px;margin-top:30px}
 .pill-toggle{display:inline-flex;border:1px solid var(--line);border-radius:999px;overflow:hidden}
 .pill-toggle button{border:0;background:#fff;padding:6px 14px;font-weight:700;font-size:13px;color:var(--muted);cursor:pointer}
@@ -1017,7 +1015,7 @@ function renderInvoice(el){
           <button class="btn primary" id="iv_print">🖨️ พิมพ์ / PDF</button>
           ${!moveout?'<button class="btn primary" id="iv_export_all">🗂️ Export ใบแจ้งทุกห้อง</button>':''}
         </div>
-        <div class="hint" style="margin-top:8px">🖼️ “บันทึกเป็นรูป” = ดาวน์โหลดสลิปเป็น PNG ตั้งชื่อไฟล์อัตโนมัติ เช่น <b>${esc(slipFilename())}</b>${!moveout?' · “Export ใบแจ้งทุกห้อง” = รวมห้องที่มีผู้เช่าเป็น PDF ห้องละ 1 หน้า':''}${moveout?' · บันทึกแล้วจะถามว่าตั้งห้องเป็นว่างเลยไหม':' · บันทึกบิลแล้วยอดจะถูกนำไปคิดในหน้าภาพรวม'}</div>
+        <div class="hint" style="margin-top:8px">🖼️ “บันทึกเป็นรูป” = ดาวน์โหลดสลิปเป็น PNG ตั้งชื่อไฟล์อัตโนมัติ เช่น <b>${esc(slipFilename())}</b>${!moveout?' · “Export ใบแจ้งทุกห้อง” = รวมรูป PNG แยกห้องในไฟล์ ZIP เดียว':''}${moveout?' · บันทึกแล้วจะถามว่าตั้งห้องเป็นว่างเลยไหม':' · บันทึกบิลแล้วยอดจะถูกนำไปคิดในหน้าภาพรวม'}</div>
       </div>
     </div>
   </div>`;
@@ -1157,14 +1155,14 @@ function slipHTML(inv){
     ${inv.note?`<div class="note"><b>หมายเหตุ:</b> ${esc(inv.note)}</div>`:''}
   </div></div>`;
 }
-function slipFilename(){
-  const inv=buildInvoiceObject();
+function invoiceSlipFilename(inv){
   const {y,m}=parsePeriod(inv.period);
   const room=(inv.roomLabel||"room").replace(/[\/\\\s]/g,"-");
   const mon=(m>=1&&m<=12)?EN_MONTHS[m-1]:"";
   const base=[room, mon, y||""].filter(Boolean).join("_");
   return base + (inv.type==="moveout"?"_moveout":"") + ".png";
 }
+function slipFilename(){ return invoiceSlipFilename(buildInvoiceObject()); }
 function defaultInvoiceForRoom(rid, curP, billP, issueDate){
   const oldForm=invoiceForm, oldMode=invoiceMode;
   initInvoiceForm(rid);
@@ -1178,49 +1176,73 @@ function defaultInvoiceForRoom(rid, curP, billP, issueDate){
   invoiceForm=oldForm; invoiceMode=oldMode;
   return inv;
 }
-function exportAllInvoices(){
+async function exportAllInvoices(){
   const period=invoiceForm.billP, curP=invoiceForm.curP, issueDate=invoiceForm.issueDate||todayISO();
   if(!period){ alert("กรุณาเลือกรอบบิล"); return; }
   const rooms=state.rooms.filter(rid=>state.tenants[rid] && state.tenants[rid].occupied);
   if(!rooms.length){ alert("ไม่มีห้องที่มีผู้เช่าสำหรับส่งออก"); return; }
   const invoices=rooms.map(rid=>state.invoices.find(i=>i.roomId===rid && i.period===period && i.type!=="moveout") || defaultInvoiceForRoom(rid,curP,period,issueDate));
-  const css=(document.querySelector("style")||{}).textContent||"";
-  const pages=invoices.map(inv=>`<section class="bulk-print-slip">${slipHTML(inv)}</section>`).join("");
-  const frame=document.createElement("iframe");
-  frame.style.position="fixed"; frame.style.right="0"; frame.style.bottom="0"; frame.style.width="0"; frame.style.height="0"; frame.style.border="0";
-  document.body.appendChild(frame);
-  const doc=frame.contentDocument;
-  doc.open();
-  doc.write(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>ใบแจ้ง_${esc(period)}</title><style>${css}\n@page{size:A4;margin:12mm}body{background:#fff}.card{border:0;box-shadow:none;margin:0;padding:0}.slip{border:0;max-width:none;padding:0}.slip .foot{display:none}.bulk-print-slip{page-break-after:always;break-after:page}.bulk-print-slip:last-child{page-break-after:auto;break-after:auto}@media print{body *{visibility:visible!important}#printable{position:static!important;width:auto!important}}</style></head><body>${pages}</body></html>`);
-  doc.close();
-  setTimeout(()=>{ frame.contentWindow.focus(); frame.contentWindow.print(); setTimeout(()=>frame.remove(),1000); },250);
-  toast("เตรียมใบแจ้ง "+rooms.length+" ห้องแล้ว — เลือก Save as PDF ได้เลย");
+  const btn=$("#iv_export_all"); if(btn){btn.disabled=true;btn.textContent="⏳ กำลังสร้างรูป...";}
+  const holder=document.createElement("div");
+  holder.style.cssText="position:fixed;left:-10000px;top:0;width:572px;background:#fff";
+  document.body.appendChild(holder);
+  try{
+    const files=[];
+    for(const inv of invoices){
+      holder.innerHTML=slipHTML(inv);
+      const blob=await slipNodeToPng($("#printable",holder));
+      files.push({name:invoiceSlipFilename(inv),data:new Uint8Array(await blob.arrayBuffer())});
+    }
+    downloadBlob(makeZip(files),`invoices_${period}.zip`);
+    toast("ดาวน์โหลดรูปใบแจ้ง "+rooms.length+" ห้องแล้ว ✓");
+  }catch(e){ console.warn("exportAllInvoices",e); toast("สร้างรูปไม่สำเร็จ — ลองใหม่อีกครั้ง"); }
+  finally{holder.remove();if(btn){btn.disabled=false;btn.innerHTML="🗂️ Export ใบแจ้งทุกห้อง";}}
 }
 // Render the slip to a PNG entirely in-browser (SVG foreignObject -> canvas). No external library.
+async function slipNodeToPng(node){
+  if(!node) throw new Error("slip not found");
+  const rect=node.getBoundingClientRect();
+  const w=Math.ceil(rect.width), h=Math.ceil(rect.height);
+  const css=(document.querySelector("style")||{}).textContent||"";
+  const clone=node.cloneNode(true); clone.style.margin="0";
+  const xml=new XMLSerializer().serializeToString(clone);
+  const body=`<div xmlns="http://www.w3.org/1999/xhtml" style="width:${w}px;background:#fff;font-family:'Sarabun',system-ui,-apple-system,'Noto Sans Thai',sans-serif"><style><![CDATA[${css}]]></style>${xml}</div>`;
+  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><foreignObject x="0" y="0" width="100%" height="100%">${body}</foreignObject></svg>`;
+  const img=new Image();
+  await new Promise((resolve,reject)=>{img.onload=resolve;img.onerror=()=>reject(new Error("render"));img.src="data:image/svg+xml;charset=utf-8,"+encodeURIComponent(svg);});
+  const scale=2,canvas=document.createElement("canvas");canvas.width=w*scale;canvas.height=h*scale;
+  const ctx=canvas.getContext("2d");ctx.fillStyle="#fff";ctx.fillRect(0,0,canvas.width,canvas.height);ctx.scale(scale,scale);ctx.drawImage(img,0,0);
+  const blob=await new Promise(resolve=>canvas.toBlob(resolve,"image/png"));
+  if(!blob) throw new Error("blob");
+  return blob;
+}
+function downloadBlob(blob,name){
+  const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);
+}
+function crc32(data){
+  let c=-1;for(const b of data){c^=b;for(let k=0;k<8;k++)c=(c>>>1)^((c&1)?0xedb88320:0);}return(c^-1)>>>0;
+}
+function makeZip(files){
+  const enc=new TextEncoder(),parts=[],central=[];let offset=0;
+  const u16=n=>new Uint8Array([n&255,(n>>>8)&255]);
+  const u32=n=>new Uint8Array([n&255,(n>>>8)&255,(n>>>16)&255,(n>>>24)&255]);
+  const join=xs=>{const n=xs.reduce((a,x)=>a+x.length,0),out=new Uint8Array(n);let p=0;for(const x of xs){out.set(x,p);p+=x.length;}return out;};
+  for(const f of files){
+    const name=enc.encode(f.name),crc=crc32(f.data),size=f.data.length;
+    const local=join([u32(0x04034b50),u16(20),u16(0x800),u16(0),u16(0),u16(0),u32(crc),u32(size),u32(size),u16(name.length),u16(0),name,f.data]);
+    parts.push(local);
+    central.push(join([u32(0x02014b50),u16(20),u16(20),u16(0x800),u16(0),u16(0),u16(0),u32(crc),u32(size),u32(size),u16(name.length),u16(0),u16(0),u16(0),u16(0),u32(0),u32(offset),name]));
+    offset+=local.length;
+  }
+  const cd=join(central),end=join([u32(0x06054b50),u16(0),u16(0),u16(files.length),u16(files.length),u32(cd.length),u32(offset),u16(0)]);
+  return new Blob([...parts,cd,end],{type:"application/zip"});
+}
 async function saveSlipImage(){
   const node=document.getElementById("printable");
   if(!node){ toast("ไม่พบสลิป"); return; }
   try{
-    const rect=node.getBoundingClientRect();
-    const w=Math.ceil(rect.width), h=Math.ceil(rect.height);
-    const css=(document.querySelector("style")||{}).textContent||"";
-    const clone=node.cloneNode(true); clone.style.margin="0";
-    const xml=new XMLSerializer().serializeToString(clone);
-    const body=`<div xmlns="http://www.w3.org/1999/xhtml" style="width:${w}px;background:#fff;font-family:'Sarabun',system-ui,-apple-system,'Noto Sans Thai',sans-serif"><style><![CDATA[${css}]]></style>${xml}</div>`;
-    const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><foreignObject x="0" y="0" width="100%" height="100%">${body}</foreignObject></svg>`;
-    const url="data:image/svg+xml;charset=utf-8,"+encodeURIComponent(svg);
-    const img=new Image();
-    await new Promise((resolve,reject)=>{ img.onload=resolve; img.onerror=()=>reject(new Error("render")); img.src=url; });
-    const scale=2, canvas=document.createElement("canvas");
-    canvas.width=w*scale; canvas.height=h*scale;
-    const ctx=canvas.getContext("2d");
-    ctx.fillStyle="#fff"; ctx.fillRect(0,0,canvas.width,canvas.height);
-    ctx.scale(scale,scale); ctx.drawImage(img,0,0);
-    const blob=await new Promise((resolve)=>canvas.toBlob(resolve,"image/png"));
-    if(!blob) throw new Error("blob");
-    const durl=URL.createObjectURL(blob), a=document.createElement("a");
-    a.href=durl; a.download=slipFilename(); document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(()=>URL.revokeObjectURL(durl),1500);
+    const blob=await slipNodeToPng(node);
+    downloadBlob(blob,slipFilename());
     toast("บันทึกรูปแล้ว: "+slipFilename()+" ✓");
   }catch(e){
     console.warn("saveSlipImage",e);
