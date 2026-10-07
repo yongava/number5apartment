@@ -1115,9 +1115,10 @@ function buildInvoiceObject(){
     if((it.desc&&it.desc.trim())||num(it.price)!==0)
       lines.push({no:no++,desc:it.desc||"รายการเพิ่มเติม",units:num(it.qty),price:num(it.price),amount:num(it.qty)*num(it.price)});
   });
-  const subtotal=lines.reduce((a,l)=>a+l.amount,0);
+  const subtotal=round2(lines.reduce((a,l)=>a+l.amount,0));
   const discount=num(invoiceForm.discount);
-  const charges=Math.max(0,subtotal-discount);
+  // bill total is whole baht: satang are dropped (rounded down); the slip shows the dropped part as "ปัดเศษ"
+  const charges=Math.max(0,Math.floor(round2(subtotal-discount)));
   const base={
     roomId:rid, roomLabel:roomLabel(rid), tenant:tenantName(rid), phone:t.phone||"",
     period:invoiceForm.billP, curP:invoiceForm.curP,
@@ -1136,11 +1137,13 @@ function buildInvoiceObject(){
 }
 function slipHTML(inv){
   const mo = inv.type==="moveout";
+  const rounding = round2(inv.total-(num(inv.subtotal)-num(inv.discount)));
+  const roundRow = (rounding<0 && rounding>-1) ? `<tr><td></td><td colspan="3" style="text-align:right;color:#666">ปัดเศษ</td><td class="num" style="color:var(--red)">${fmt(rounding)}</td></tr>` : '';
   const totals = mo
-    ? `<tr class="totrow"><td></td><td colspan="3" style="text-align:right">รวมค่าใช้จ่าย</td><td class="num">${fmt(inv.total)} ฿</td></tr>
+    ? `${roundRow}<tr class="totrow"><td></td><td colspan="3" style="text-align:right">รวมค่าใช้จ่าย</td><td class="num">${fmt(inv.total)} ฿</td></tr>
        <tr><td></td><td colspan="3" style="text-align:right;color:#666">หักเงินประกัน</td><td class="num" style="color:var(--red)">-${fmt(inv.deposit||0)}</td></tr>
        <tr class="totrow"><td></td><td colspan="3" style="text-align:right">${inv.refund>=0?'คงเหลือคืนผู้เช่า':'ผู้เช่าต้องชำระเพิ่ม'}</td><td class="num" style="color:${inv.refund>=0?'var(--green)':'var(--red)'}">${fmt(Math.abs(inv.refund||0))} ฿</td></tr>`
-    : `${inv.discount?`<tr><td></td><td colspan="3" style="text-align:right;color:#666">ส่วนลด</td><td class="num" style="color:var(--red)">-${fmt(inv.discount)}</td></tr>`:''}
+    : `${inv.discount?`<tr><td></td><td colspan="3" style="text-align:right;color:#666">ส่วนลด</td><td class="num" style="color:var(--red)">-${fmt(inv.discount)}</td></tr>`:''}${roundRow}
        <tr class="totrow"><td></td><td colspan="3" style="text-align:right">ยอดรวมสุทธิ</td><td class="num">${fmt(inv.total)} ฿</td></tr>`;
   return `<div class="card"><div class="slip" id="printable">
     <div class="sh">
