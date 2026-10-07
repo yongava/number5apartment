@@ -215,6 +215,7 @@ const $$ = (s,el=document)=>Array.from(el.querySelectorAll(s));
 function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 function num(v){const n=parseFloat(String(v).replace(/,/g,""));return isFinite(n)?n:0;}
 function fmt(n){n=Math.round((+n||0)*100)/100;return n.toLocaleString("th-TH",{maximumFractionDigits:2});}
+function round2(n){return Math.round((+n||0)*100)/100;}
 function fmt0(n){return Math.round(+n||0).toLocaleString("th-TH");}
 function baht(n){return fmt(n)+" ฿";}
 function periodKey(y,m){return `${y}-${String(m).padStart(2,"0")}`;} // m is 1-based
@@ -263,6 +264,7 @@ function defaultState(){
     incomeHistory: deepClone(SEED.incomeHistory||{}),
     invoices: [],
     costs: {},               // period -> {govWater,govElec,maintenance,note}
+    rates: {},               // billing period -> {water,elec,common} (building-wide, applies from that month on)
     settings:{ defaultNote: DEFAULT_NOTE, address: DEFAULT_ADDRESS },
     seq: 1
   };
@@ -280,6 +282,7 @@ function normalizeState(s){
   if(!out.incomeHistory || typeof out.incomeHistory!=="object") out.incomeHistory={};
   if(!Array.isArray(out.invoices)) out.invoices=[];
   if(!out.costs || typeof out.costs!=="object" || Array.isArray(out.costs)) out.costs={};
+  if(!out.rates || typeof out.rates!=="object" || Array.isArray(out.rates)) out.rates={};
   out.settings=Object.assign({defaultNote:DEFAULT_NOTE, address:DEFAULT_ADDRESS}, (s.settings&&typeof s.settings==="object")?s.settings:{});
   out.buildingName=out.buildingName||base.buildingName;
   out.seq=+out.seq||1;
@@ -436,13 +439,23 @@ function utilityForPeriod(period){
       if(wu>0)waterRev+=wu*num(inv.waterRate);
       if(eu>0)elecRev+=eu*num(inv.elecRate);
     }else{
-      const t=state.tenants[rid]||{};
-      if(uw&&uw.units>0)waterRev+=uw.units*(+t.waterRate||0);
-      if(ue&&ue.units>0)elecRev+=ue.units*(+t.elecRate||0);
+      const r=rateFor(period,rid);
+      if(uw&&uw.units>0)waterRev+=uw.units*r.water;
+      if(ue&&ue.units>0)elecRev+=ue.units*r.elec;
     }
   }
   return {waterUnits,elecUnits,waterRev,elecRev,waterResets,elecResets,resets:waterResets+elecResets,have};
 }
+// Building-wide rates for a billing month: the latest entry in state.rates at or before `period`.
+// Months before the first entry fall back to the room's own (legacy) per-tenant rates, no common fee.
+function rateFor(period, rid){
+  const keys=Object.keys(state.rates).filter(p=>!period||p<=period).sort();
+  const from=keys.length?keys[keys.length-1]:null;
+  if(from){const r=state.rates[from];return {water:num(r.water),elec:num(r.elec),common:num(r.common),from};}
+  const t=state.tenants[rid]||{};
+  return {water:+t.waterRate||0,elec:+t.elecRate||0,common:0,from:null};
+}
+function thisPeriod(){const n=new Date();return periodKey(n.getFullYear(),n.getMonth()+1);}
 function costFor(period){const c=state.costs[period]||{};return {govWater:+c.govWater||0,govElec:+c.govElec||0,maintenance:+c.maintenance||0,note:c.note||""};}
 // all periods relevant to dashboards (income + readings + costs)
 function allYears(){
@@ -668,12 +681,13 @@ function renderDashboard(el){
 function renderTenants(el){
   el.innerHTML=`
   <div class="page-head">
-    <div><h2>ข้อมูลผู้เช่า</h2><div class="desc">แก้ไขผู้เช่าและอัตราค่าเช่า/ค่าน้ำ/ค่าไฟ ของแต่ละห้อง</div></div>
+    <div><h2>ข้อมูลผู้เช่า</h2><div class="desc">แก้ไขผู้เช่าและค่าห้องของแต่ละห้อง · ค่าน้ำ-ไฟ-ส่วนกลางตั้งเป็นรายเดือนที่หน้า “ตั้งค่า”</div></div>
   </div>
   <div class="grid g3">
     ${state.rooms.map(rid=>{
       const t=state.tenants[rid]||{};
       const nm=tenantName(rid);
+      const r=rateFor(thisPeriod(),rid);
       return `<div class="roomcard">
         <div class="rn">
           <div class="badge ${t.occupied?'':'empty'}">${esc(roomLabel(rid))}</div>
@@ -683,8 +697,9 @@ function renderTenants(el){
         <div class="ph">${t.phone?('📞 '+esc(t.phone)):'<span class="muted">ไม่มีเบอร์</span>'}</div>
         <div class="meta">
           <span>ค่าห้อง <b>${fmt0(t.roomRate)}</b></span>
-          <span>💧 <b>${fmt(t.waterRate)}</b>/หน่วย</span>
-          <span>⚡ <b>${fmt(t.elecRate)}</b>/หน่วย</span>
+          <span>💧 <b>${fmt(r.water)}</b>/หน่วย</span>
+          <span>⚡ <b>${fmt(r.elec)}</b>/หน่วย</span>
+          ${r.common?`<span>ส่วนกลาง <b>${fmt0(r.common)}</b></span>`:''}
         </div>
         <div class="meta"><span>ประกัน <b>${fmt0(t.deposit)}</b> ฿</span>${t.moveInDate?`<span>ย้ายเข้า <b>${fmtDateTH(t.moveInDate)}</b></span>`:''}</div>
         ${(t.moveInDate&&(t.startWater!=null||t.startElec!=null))?`<div class="meta"><span class="tag b" style="font-size:11px">🔑 เริ่ม 💧${t.startWater!=null?fmt0(t.startWater):'–'} · ⚡${t.startElec!=null?fmt0(t.startElec):'–'}</span></div>`:''}
@@ -722,9 +737,8 @@ function editTenant(rid, isNew){
     <div class="grid g2">
       <div class="field"><label class="f">เงินประกัน (฿)</label><input id="t_dep" type="number" value="${t.deposit||0}"></div>
       <div class="field"><label class="f">ค่าห้อง/เดือน (฿)</label><input id="t_room" type="number" value="${t.roomRate||0}"></div>
-      <div class="field"><label class="f">ค่าไฟ/หน่วย (฿)</label><input id="t_elec" type="number" step="0.01" value="${t.elecRate||0}"></div>
-      <div class="field"><label class="f">ค่าน้ำ/หน่วย (฿)</label><input id="t_water" type="number" step="0.01" value="${t.waterRate||0}"></div>
     </div>
+    <div class="hint">ค่าน้ำ-ไฟ-ส่วนกลาง ใช้อัตรารายเดือนของทั้งหอ — ปรับได้ที่หน้า “ตั้งค่า” หรือตอนออกบิล</div>
     <div class="divider"></div>
     <div style="font-weight:700;font-size:14.5px;margin-bottom:4px">🔑 มิเตอร์ตอนย้ายเข้า (ฐานคิดบิล)</div>
     <div class="hint" style="margin-bottom:10px">ใส่เลขมิเตอร์ ณ วันที่ผู้เช่าย้ายเข้า ระบบจะคิดค่าน้ำ-ไฟจากเลขนี้เป็นต้นไป กันไม่ให้ผู้เช่าใหม่จ่ายค่าช่วงห้องว่าง/ซ่อมบำรุง</div>
@@ -749,8 +763,8 @@ function editTenant(rid, isNew){
       state.tenants[rid]={
         firstName:$("#t_first").value.trim(), lastName:$("#t_last").value.trim(),
         phone:$("#t_phone").value.trim(), deposit:num($("#t_dep").value),
-        roomRate:num($("#t_room").value), elecRate:num($("#t_elec").value),
-        waterRate:num($("#t_water").value), occupied:$("#t_occ").checked,
+        roomRate:num($("#t_room").value), elecRate:num(t.elecRate),
+        waterRate:num(t.waterRate), occupied:$("#t_occ").checked,
         moveInDate:$("#t_movein").value||"", startWater:sw===""?null:num(sw), startElec:se===""?null:num(se),
         note:$("#t_note").value.trim()
       };
@@ -910,10 +924,8 @@ function renderInvoice(el){
   const water=state.water, elec=state.elec;
   const curOptions=[...new Set([...roomReadingPeriods(water,rid),...roomReadingPeriods(elec,rid)])].sort().reverse();
   const wUnits=num(invoiceForm.waterUnits), eUnits=num(invoiceForm.elecUnits);
-  const waterAmt=wUnits*(+t.waterRate||0), elecAmt=eUnits*(+t.elecRate||0), roomAmt=(+t.roomRate||0);
-  const customTotal=invoiceForm.items.reduce((a,it)=>a+num(it.qty)*num(it.price),0);
-  const subtotal=roomAmt+waterAmt+elecAmt+customTotal;
-  const total=Math.max(0,subtotal-num(invoiceForm.discount));
+  const rate=rateFor(invoiceForm.billP,rid);
+  const waterAmt=wUnits*rate.water, elecAmt=eUnits*rate.elec;
   const existing=state.invoices.find(i=>i.roomId===rid && i.period===invoiceForm.billP);
 
   const warnW = invoiceForm._wCur==null ? "ไม่พบเลขมิเตอร์น้ำครั้งนี้ (เดือนที่เลือก) — กรุณากรอกจำนวนหน่วยเอง"
@@ -925,7 +937,7 @@ function renderInvoice(el){
 
   el.innerHTML=`
   <div class="page-head">
-    <div><h2>${moveout?'สรุปยอดย้ายออก':'ออกใบแจ้งหนี้'}</h2><div class="desc">${moveout?'คิดเฉพาะค่าน้ำ-ไฟ (และรายการอื่นถ้ามี) แล้วหักจากเงินประกัน — ไม่คิดค่าห้อง':'เลือกห้องและเดือน ระบบดึงข้อมูลผู้เช่าและคำนวณค่าน้ำ-ไฟให้อัตโนมัติ'}</div></div>
+    <div><h2>${moveout?'สรุปยอดย้ายออก':'ออกใบแจ้งหนี้'}</h2><div class="desc">${moveout?'คิดเฉพาะค่าน้ำ-ไฟ (และรายการอื่นถ้ามี) แล้วหักจากเงินประกัน — ไม่คิดค่าห้อง/ค่าส่วนกลาง':'เลือกห้องและเดือน ระบบดึงข้อมูลผู้เช่าและคำนวณค่าน้ำ-ไฟให้อัตโนมัติ'}</div></div>
     <div class="seg no-print">
       <button data-mode="normal" class="${!moveout?'active':''}">🧾 บิลปกติ</button>
       <button data-mode="moveout" class="${moveout?'active':''}">🚪 ย้ายออก</button>
@@ -952,6 +964,12 @@ function renderInvoice(el){
 
       <div class="card">
         <h3><span class="ic">🔢</span>ค่าน้ำ-ค่าไฟ</h3>
+        <div class="kv" style="grid-template-columns:1fr auto;align-items:center;margin-bottom:12px">
+          <span class="k">${rate.from
+            ?`อัตรารอบ ${esc(periodLabelShort(invoiceForm.billP))}: 💧 <b>${fmt(rate.water)}</b> · ⚡ <b>${fmt(rate.elec)}</b> · ส่วนกลาง <b>${fmt0(rate.common)}</b> <span class="muted">(ใช้ตั้งแต่ ${esc(periodLabelShort(rate.from))})</span>`
+            :`ยังไม่ได้ตั้งอัตรารายเดือนสำหรับรอบนี้ — ใช้อัตราเดิมของห้อง 💧 <b>${fmt(rate.water)}</b> · ⚡ <b>${fmt(rate.elec)}</b>`}</span>
+          <button class="btn sm ghost" id="iv_rate">✏️ ปรับอัตรา</button>
+        </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
           <div>
             <label class="f">💧 น้ำ — เลขครั้งนี้ / ครั้งก่อน</label>
@@ -959,7 +977,7 @@ function renderInvoice(el){
               <span class="k">ครั้งนี้ (${invoiceForm.curP?periodLabelShort(invoiceForm.curP):'-'})</span><span class="v">${invoiceForm._wCur==null?'–':fmt0(invoiceForm._wCur)}</span>
               <span class="k">ครั้งก่อน (${esc(invoiceForm._wPrevLabel||'-')})</span><span class="v">${invoiceForm._wPrev==null?'–':fmt0(invoiceForm._wPrev)}</span>
             </div>
-            <label class="f">หน่วยที่ใช้ × ${fmt(t.waterRate)}฿ ${invoiceForm._wInit?'<span class="tag b" style="font-size:11px">🔑 เริ่มต้น</span>':''}</label>
+            <label class="f">หน่วยที่ใช้ × ${fmt(rate.water)}฿ ${invoiceForm._wInit?'<span class="tag b" style="font-size:11px">🔑 เริ่มต้น</span>':''}</label>
             <input type="number" step="0.01" id="iv_wu" value="${wUnits}">
             <div class="hint">= ${baht(waterAmt)}</div>
             ${warnW?`<div class="warn" style="margin-top:6px">⚠️ ${esc(warnW)}</div>`:''}
@@ -970,7 +988,7 @@ function renderInvoice(el){
               <span class="k">ครั้งนี้ (${invoiceForm.curP?periodLabelShort(invoiceForm.curP):'-'})</span><span class="v">${invoiceForm._eCur==null?'–':fmt0(invoiceForm._eCur)}</span>
               <span class="k">ครั้งก่อน (${esc(invoiceForm._ePrevLabel||'-')})</span><span class="v">${invoiceForm._ePrev==null?'–':fmt0(invoiceForm._ePrev)}</span>
             </div>
-            <label class="f">หน่วยที่ใช้ × ${fmt(t.elecRate)}฿ ${invoiceForm._eInit?'<span class="tag b" style="font-size:11px">🔑 เริ่มต้น</span>':''}</label>
+            <label class="f">หน่วยที่ใช้ × ${fmt(rate.elec)}฿ ${invoiceForm._eInit?'<span class="tag b" style="font-size:11px">🔑 เริ่มต้น</span>':''}</label>
             <input type="number" step="0.01" id="iv_eu" value="${eUnits}">
             <div class="hint">= ${baht(elecAmt)}</div>
             ${warnE?`<div class="warn" style="margin-top:6px">⚠️ ${esc(warnE)}</div>`:''}
@@ -996,7 +1014,7 @@ function renderInvoice(el){
         <h3><span class="ic">🚪</span>หักจากเงินประกัน</h3>
         <div class="field" style="max-width:260px"><label class="f">เงินประกันที่รับไว้ (฿)</label>
           <input type="number" step="0.01" id="iv_deposit" value="${invoiceForm.deposit==null?(+t.deposit||0):invoiceForm.deposit}"></div>
-        <div class="hint">นำค่าน้ำ-ไฟและรายการอื่นๆ มาหักจากเงินประกัน แล้วสรุปยอดคืน/ค้างชำระ · ค่าห้องไม่คิด (จ่ายล่วงหน้าแล้ว)</div>
+        <div class="hint">นำค่าน้ำ-ไฟและรายการอื่นๆ มาหักจากเงินประกัน แล้วสรุปยอดคืน/ค้างชำระ · ค่าห้องและค่าส่วนกลางไม่คิด (จ่ายล่วงหน้าแล้ว)</div>
       </div>`:''}
 
       <div class="card">
@@ -1033,6 +1051,7 @@ function renderInvoice(el){
   $("#iv_date").onchange=e=>{invoiceForm.issueDate=e.target.value;refreshSlip();};
   $("#iv_additem").onclick=()=>{invoiceForm.items.push({desc:"",qty:1,price:0});renderInvoice(el);};
   bindCustomLines(el);
+  $("#iv_rate").onclick=()=>editRate(rate.from===invoiceForm.billP?rate.from:null, invoiceForm.billP);
   $("#iv_save").onclick=saveInvoice;
   $("#iv_img").onclick=saveSlipImage;
   $("#iv_print").onclick=()=>window.print();
@@ -1084,11 +1103,13 @@ function buildInvoiceObject(){
   const rid=invoiceForm.roomId; const t=state.tenants[rid]||{};
   const moveout=invoiceMode==="moveout";
   const wUnits=num(invoiceForm.waterUnits), eUnits=num(invoiceForm.elecUnits);
+  const rate=rateFor(invoiceForm.billP,rid);
   const lines=[]; let no=1;
   if(!moveout) lines.push({no:no++,desc:"ค่าห้อง",units:1,price:+t.roomRate||0,amount:+t.roomRate||0});
-  lines.push({no:no++,desc:"ค่าน้ำ",units:wUnits,price:+t.waterRate||0,amount:wUnits*(+t.waterRate||0),
+  if(!moveout && rate.common) lines.push({no:no++,desc:"ค่าส่วนกลาง",units:1,price:rate.common,amount:rate.common});
+  lines.push({no:no++,desc:"ค่าน้ำ",units:wUnits,price:rate.water,amount:round2(wUnits*rate.water),
     detail:`(${invoiceForm._wCur==null?'?':fmt0(invoiceForm._wCur)} - ${invoiceForm._wPrev==null?'?':fmt0(invoiceForm._wPrev)})`});
-  lines.push({no:no++,desc:"ค่าไฟ",units:eUnits,price:+t.elecRate||0,amount:eUnits*(+t.elecRate||0),
+  lines.push({no:no++,desc:"ค่าไฟ",units:eUnits,price:rate.elec,amount:round2(eUnits*rate.elec),
     detail:`(${invoiceForm._eCur==null?'?':fmt0(invoiceForm._eCur)} - ${invoiceForm._ePrev==null?'?':fmt0(invoiceForm._ePrev)})`});
   invoiceForm.items.forEach((it)=>{
     if((it.desc&&it.desc.trim())||num(it.price)!==0)
@@ -1103,7 +1124,7 @@ function buildInvoiceObject(){
     issueDate:invoiceForm.issueDate||todayISO(),
     lines, subtotal, discount,
     note:invoiceForm.note||"",
-    waterUnits:wUnits, elecUnits:eUnits, waterRate:+t.waterRate||0, elecRate:+t.elecRate||0
+    waterUnits:wUnits, elecUnits:eUnits, waterRate:rate.water, elecRate:rate.elec
   };
   if(moveout){
     const deposit=invoiceForm.deposit==null?(+t.deposit||0):num(invoiceForm.deposit);
@@ -1151,7 +1172,7 @@ function slipHTML(inv){
       ${totals}
       </tbody>
     </table>
-    ${mo?`<div class="note" style="background:#eef6ff"><b>สรุปย้ายออก:</b> ค่าห้องไม่คิด (จ่ายล่วงหน้าแล้ว) · คิดเฉพาะค่าน้ำ-ไฟและรายการอื่น แล้วหักจากเงินประกัน ${fmt(inv.deposit||0)} บาท</div>`:''}
+    ${mo?`<div class="note" style="background:#eef6ff"><b>สรุปย้ายออก:</b> ค่าห้องและค่าส่วนกลางไม่คิด (จ่ายล่วงหน้าแล้ว) · คิดเฉพาะค่าน้ำ-ไฟและรายการอื่น แล้วหักจากเงินประกัน ${fmt(inv.deposit||0)} บาท</div>`:''}
     ${inv.note?`<div class="note"><b>หมายเหตุ:</b> ${esc(inv.note)}</div>`:''}
   </div></div>`;
 }
@@ -1377,6 +1398,20 @@ function renderSettings(el){
   </div>
 
   <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <h3 style="margin:0"><span class="ic">💡</span>อัตราค่าน้ำ-ไฟ & ส่วนกลาง (รายเดือน)</h3>
+      <button class="btn sm primary" id="st_addrate">+ ตั้งอัตราใหม่</button>
+    </div>
+    ${Object.keys(state.rates).length?`<div class="tbl-wrap" style="margin-top:12px"><table>
+      <thead><tr><th>ใช้ตั้งแต่รอบบิล</th><th class="num">💧 น้ำ/หน่วย</th><th class="num">⚡ ไฟ/หน่วย</th><th class="num">ส่วนกลาง/ห้อง</th><th></th></tr></thead>
+      <tbody>${Object.keys(state.rates).sort().reverse().map(p=>{const r=state.rates[p];return `
+        <tr><td>${esc(periodLabel(p))}</td><td class="num">${fmt(r.water)}</td><td class="num">${fmt(r.elec)}</td><td class="num">${fmt(r.common)}</td>
+        <td><button class="btn sm ghost" data-editrate="${esc(p)}">✏️</button></td></tr>`;}).join("")}</tbody>
+    </table></div>`:'<div class="hint" style="margin-top:10px">ยังไม่ได้ตั้งอัตรารายเดือน — บิลใช้อัตราเดิมของแต่ละห้อง</div>'}
+    <div class="hint" style="margin-top:8px">ใช้กับทุกห้อง ตั้งแต่รอบบิลนั้นเป็นต้นไปจนกว่าจะตั้งอัตราใหม่ · บิลที่บันทึกไว้แล้วไม่เปลี่ยนตาม · รอบก่อนอัตราแรกใช้อัตราเดิมของแต่ละห้อง</div>
+  </div>
+
+  <div class="card">
     <h3><span class="ic">📝</span>ข้อความเริ่มต้น</h3>
     <div class="field"><label class="f">ชื่อหอพัก</label><input id="st_name" value="${esc(state.buildingName)}"></div>
     <div class="field"><label class="f">ที่อยู่ (แสดงบนหัวบิล)</label><input id="st_addr" value="${esc((state.settings&&state.settings.address)||'')}"></div>
@@ -1407,6 +1442,8 @@ function renderSettings(el){
   $("#st_syncnow").onclick=async()=>{ const ok=await pushToSheet(); toast(ok?"ซิงค์ขึ้น Sheet แล้ว ✓":"ซิงค์ไม่สำเร็จ — ดูสถานะ"); };
   $("#st_reload").onclick=async()=>{ if(confirm("โหลดข้อมูลจาก Google Sheet มาทับข้อมูลในเครื่อง?")){ localStorage.setItem(DIRTYKEY,"0"); await bootSync(); toast("โหลดจาก Sheet แล้ว ✓"); } };
   $("#st_savecfg2").onclick=async()=>{ setApiCfg({url:$("#st_url").value.trim(), token:$("#st_token").value.trim()}); localStorage.setItem(DIRTYKEY,"0"); toast("บันทึกปลายทางแล้ว กำลังโหลด…"); await bootSync(); router(); };
+  $("#st_addrate").onclick=()=>editRate(null);
+  $$("[data-editrate]",el).forEach(b=>b.onclick=()=>editRate(b.dataset.editrate));
   $("#st_export").onclick=exportData;
   $("#st_import").onclick=()=>$("#st_file").click();
   $("#st_file").onchange=importData;
@@ -1414,6 +1451,37 @@ function renderSettings(el){
   $$("[data-delinv]",el).forEach(b=>b.onclick=()=>{if(confirm("ลบบิลนี้?")){state.invoices=state.invoices.filter(i=>i.id!==b.dataset.delinv);save();renderSettings(el);}});
   $("#st_reseed").onclick=()=>{if(confirm("โหลดข้อมูลตัวอย่างจาก Excel ใหม่ทั้งหมด? (บิลและต้นทุนที่กรอกเองจะหาย)")){state=defaultState();save();toast("โหลดข้อมูลใหม่แล้ว");go("dashboard");}};
   $("#st_clear").onclick=()=>{if(confirm("ล้างข้อมูลทั้งหมดและเริ่มจากศูนย์?")){localStorage.removeItem(LSKEY);state=defaultState();save();go("dashboard");}};
+}
+// Add/edit one building-wide rate entry. `period` = existing entry key (edit) or null (new, defaulting to `defP`).
+function editRate(period, defP){
+  const isNew=!period;
+  const keys=Object.keys(state.rates).sort();
+  const last=keys.length?state.rates[keys[keys.length-1]]:null;
+  const r=period?state.rates[period]:(last||{water:0,elec:0,common:0});
+  const p0=period||defP||thisPeriod();
+  const {y:dy,m:dm}=parsePeriod(p0);
+  const yNow=new Date().getFullYear();
+  const yearOpts=[];for(let y=yNow+1;y>=2024;y--)yearOpts.push(y);
+  openModal(isNew?"ตั้งอัตราใหม่":"แก้อัตรา — ตั้งแต่ "+periodLabel(period),`
+    <div class="grid g2">
+      <div class="field"><label class="f">ใช้ตั้งแต่รอบบิล (เดือน)</label><select id="rt_m" ${isNew?'':'disabled'}>${TH_MONTHS.map((mn,i)=>`<option value="${i+1}" ${i+1===dm?'selected':''}>${mn}</option>`).join("")}</select></div>
+      <div class="field"><label class="f">ปี (ค.ศ.)</label><select id="rt_y" ${isNew?'':'disabled'}>${yearOpts.map(y=>`<option value="${y}" ${y===dy?'selected':''}>${y}</option>`).join("")}</select></div>
+    </div>
+    <div class="grid g3">
+      <div class="field"><label class="f">💧 ค่าน้ำ/หน่วย (฿)</label><input id="rt_w" type="number" step="0.01" value="${num(r.water)}"></div>
+      <div class="field"><label class="f">⚡ ค่าไฟ/หน่วย (฿)</label><input id="rt_e" type="number" step="0.01" value="${num(r.elec)}"></div>
+      <div class="field"><label class="f">ค่าส่วนกลาง/ห้อง (฿)</label><input id="rt_c" type="number" step="0.01" value="${num(r.common)}"></div>
+    </div>
+    <div class="hint">ใช้กับทุกห้อง ตั้งแต่รอบบิลนี้เป็นต้นไปจนกว่าจะตั้งอัตราใหม่ · บิลที่บันทึกไว้แล้วไม่เปลี่ยน</div>
+  `,[
+    ...(period?[{label:"ลบอัตรานี้",cls:"danger",act:()=>{if(confirm("ลบอัตราที่ใช้ตั้งแต่ "+periodLabel(period)+"?")){delete state.rates[period];save();closeModal();router();}}}]:[]),
+    {label:"บันทึก",cls:"primary",act:()=>{
+      const p=period||periodKey(+$("#rt_y").value,+$("#rt_m").value);
+      if(isNew && state.rates[p] && !confirm("มีอัตราที่ใช้ตั้งแต่ "+periodLabel(p)+" อยู่แล้ว — เขียนทับ?")) return;
+      state.rates[p]={water:num($("#rt_w").value),elec:num($("#rt_e").value),common:num($("#rt_c").value)};
+      save();closeModal();router();toast("บันทึกอัตราแล้ว ✓");
+    }}
+  ]);
 }
 function exportData(){
   const blob=new Blob([JSON.stringify(state,null,1)],{type:"application/json"});

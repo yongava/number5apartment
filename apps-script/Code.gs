@@ -23,11 +23,13 @@ var TAB = {
   invoices: "บิล",
   costs:    "ต้นทุน",
   settings: "ตั้งค่า",
-  income:   "รายได้ย้อนหลัง"
+  income:   "รายได้ย้อนหลัง",
+  rates:    "อัตรา"
 };
 var TENANT_COLS  = ["roomId","roomLabel","firstName","lastName","phone","deposit","roomRate","elecRate","waterRate","occupied","moveInDate","startWater","startElec","note"];
 var INVOICE_COLS = ["id","period","roomId","roomLabel","tenant","phone","issueDate","savedAt","type","waterUnits","elecUnits","waterRate","elecRate","subtotal","discount","total","deposit","refund","note","linesJson"];
 var COST_COLS    = ["period","govWater","govElec","maintenance","note"];
+var RATE_COLS    = ["period","waterRate","elecRate","commonFee"];
 
 /* ===================== HTTP entry points ===================== */
 function doGet(e){
@@ -96,6 +98,7 @@ function readAll_(){
     elec: readMeter_(TAB.elec),
     invoices: readInvoices_(),
     costs: readCosts_(),
+    rates: readRates_(),
     incomeHistory: readIncome_(),
     settings: { defaultNote: s_(getSetting_("defaultNote")), address: s_(getSetting_("address")) },
     seq: Number(getSetting_("seq")) || 1
@@ -172,6 +175,12 @@ function readCosts_(){
   });
   return o;
 }
+function readRates_(){
+  var o={}; readTable_(TAB.rates).forEach(function(r){
+    o[String(r.period)] = {water:n_(r.waterRate), elec:n_(r.elecRate), common:n_(r.commonFee)};
+  });
+  return o;
+}
 function readIncome_(){
   var sh = ss_().getSheetByName(TAB.income);
   if(!sh || sh.getLastRow()<2) return {};
@@ -223,6 +232,14 @@ function writeAll_(st){
   writeSheet_(TAB.costs, COST_COLS, costRows);
 
   writeIncome_(rooms, st.incomeHistory||{});
+
+  // only clients that know about rates send them — never wipe the tab on a save from an older frontend
+  if(st.rates && typeof st.rates==="object" && !Array.isArray(st.rates)){
+    var rateRows = Object.keys(st.rates).sort().map(function(p){
+      var r=st.rates[p]||{}; return [p, n_(r.water), n_(r.elec), n_(r.common)];
+    });
+    writeSheet_(TAB.rates, RATE_COLS, rateRows);
+  }
 
   writeSheet_(TAB.settings, ["key","value"], [
     ["buildingName", s_(st.buildingName)||"หอพักเลขที่ 5"],
